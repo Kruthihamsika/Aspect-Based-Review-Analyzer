@@ -1,6 +1,10 @@
 from fastapi import FastAPI
-from app.api.v1.endpoints import router as api_router
 
-app = FastAPI(title="Aspect-Based Review Analyzer API")
+from app.api.v1.api import router as api_router
+from app.core.config import settings
+from app.core.logging import configure_logging
 
+configure_logging()
+
+app = FastAPI(title=settings.app_name)
 app.include_router(api_router)
