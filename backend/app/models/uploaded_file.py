@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import BaseModel
 
 if TYPE_CHECKING:
+    from app.models.analysis_job import AnalysisJob
     from app.models.review import Review
 
 
@@ -25,6 +26,11 @@ class UploadedFile(BaseModel):
     status: Mapped[str] = mapped_column(String(50), nullable=False)
 
     reviews: Mapped[list["Review"]] = relationship(
+        back_populates="uploaded_file",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    analysis_jobs: Mapped[list["AnalysisJob"]] = relationship(
         back_populates="uploaded_file",
         cascade="all, delete-orphan",
         passive_deletes=True,
