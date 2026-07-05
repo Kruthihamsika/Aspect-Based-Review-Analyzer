@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.models.detected_aspect import DetectedAspect
 from app.models.review import Review
 from app.models.uploaded_file import UploadedFile
-from app.nlp.aspect_extractor import extract_aspects
+from app.services.aspect_extractor import extract_aspects
 
 
 class AspectService:
@@ -74,6 +74,7 @@ class AspectService:
                 detected_aspect = DetectedAspect(
                     review_id=review.id,
                     aspect_name=aspect_name,
+                    aspect=aspect_name,
                     category=None,
                 )
 

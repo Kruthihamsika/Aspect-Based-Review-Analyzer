@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import Float, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import BaseModel
@@ -23,6 +23,11 @@ class DetectedAspect(BaseModel):
     )
     aspect_name: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
     category: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+    # Migration-ready aspect sentiment fields. Keep nullable until existing rows
+    # are backfilled, then a migration can enforce NOT NULL where appropriate.
+    aspect: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+    sentiment: Mapped[str | None] = mapped_column(String(50), index=True, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     review: Mapped["Review"] = relationship(back_populates="detected_aspects")
     aspect_sentiments: Mapped[list["AspectSentiment"]] = relationship(

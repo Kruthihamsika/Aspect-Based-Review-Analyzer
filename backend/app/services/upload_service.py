@@ -6,6 +6,7 @@ import pandas as pd
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
+from app.models.detected_aspect import DetectedAspect
 from app.models.review import Review
 from app.models.uploaded_file import UploadedFile
 
@@ -69,20 +70,35 @@ class UploadService:
             total_reviews=len(dataframe),
             status="uploaded",
         )
-        self.db.add(uploaded_file)
-        self.db.flush()
 
-        review_rows = [
-            Review(
-                uploaded_file_id=uploaded_file.id,
-                source=str(row["source"]),
-                review_text=str(row["review_text"]),
-                cleaned_text=None,
-            )
-            for _, row in dataframe.iterrows()
-        ]
-        self.db.add_all(review_rows)
-        self.db.commit()
+        try:
+            self.db.add(uploaded_file)
+            self.db.flush()
+
+            for row_number, (_, row) in enumerate(dataframe.iterrows(), start=1):
+                review_text = str(row["review_text"])
+
+                review = Review(
+                    uploaded_file_id=uploaded_file.id,
+                    source=str(row["source"]),
+                    review_text=review_text,
+                    cleaned_text=None,
+                )
+                self.db.add(review)
+                self.db.flush()
+
+                detected_aspects = self._build_detected_aspects(
+                    review=review,
+                    review_text=review_text,
+                    row_number=row_number,
+                )
+                self.db.add_all(detected_aspects)
+
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+
         self.db.refresh(uploaded_file)
 
         return {
@@ -91,3 +107,62 @@ class UploadService:
             "total_reviews": uploaded_file.total_reviews,
             "status": uploaded_file.status,
         }
+
+    def _build_detected_aspects(
+        self,
+        review: Review,
+        review_text: str,
+        row_number: int,
+    ) -> list[DetectedAspect]:
+        try:
+            from app.services.aspect_extractor import extract_aspects
+            from app.services.sentiment_service import SentimentService
+
+            aspects = extract_aspects(review_text)
+            sentiment_service = SentimentService()
+        except Exception as exc:  # pragma: no cover - keeps uploads resilient
+            print(f"Aspect extraction failed for review {row_number}: {exc}")
+            return []
+
+        print(f"Extracted aspects for review {row_number}: {aspects}")
+
+        detected_aspects: list[DetectedAspect] = []
+        for aspect in aspects:
+            sentiment_result = self._analyze_aspect_sentiment(
+                sentiment_service=sentiment_service,
+                review_text=review_text,
+                aspect=aspect,
+                row_number=row_number,
+            )
+
+            detected_aspects.append(
+                DetectedAspect(
+                    review_id=review.id,
+                    aspect_name=aspect,
+                    aspect=aspect,
+                    sentiment=str(sentiment_result["label"]),
+                    confidence=float(sentiment_result["score"]),
+                    category=None,
+                )
+            )
+
+        return detected_aspects
+
+    def _analyze_aspect_sentiment(
+        self,
+        sentiment_service: Any,
+        review_text: str,
+        aspect: str,
+        row_number: int,
+    ) -> dict[str, str | float]:
+        try:
+            from app.services.sentiment_service import find_aspect_context
+
+            context = find_aspect_context(review_text, aspect)
+            return sentiment_service.analyze_text(context)
+        except Exception as exc:  # pragma: no cover - keeps uploads resilient
+            print(
+                f"Sentiment prediction failed for review {row_number}, "
+                f"aspect '{aspect}': {exc}"
+            )
+            return {"label": "Neutral", "score": 0.0}

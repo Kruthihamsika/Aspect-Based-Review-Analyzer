@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any
 import uuid
 
@@ -10,14 +11,87 @@ from app.models.aspect_sentiment import AspectSentiment
 from app.models.detected_aspect import DetectedAspect
 from app.models.review import Review
 from app.models.uploaded_file import UploadedFile
-from app.nlp.sentiment_analyzer import analyze_sentiment
+from app.services.aspect_extractor import extract_aspects, get_nlp_model
+
+
+SENTIMENT_MODEL_NAME = "cardiffnlp/twitter-roberta-base-sentiment-latest"
+LABEL_MAP = {
+    "negative": "Negative",
+    "neutral": "Neutral",
+    "positive": "Positive",
+}
+CLAUSE_BOUNDARIES = {
+    "but",
+    "however",
+    "though",
+    "although",
+    "whereas",
+    "while",
+    ";",
+}
+
+
+@lru_cache(maxsize=1)
+def get_sentiment_pipeline() -> Any:
+    """Load the HuggingFace sentiment pipeline once per process."""
+    try:
+        from transformers import pipeline
+
+        return pipeline(
+            task="sentiment-analysis",
+            model=SENTIMENT_MODEL_NAME,
+            tokenizer=SENTIMENT_MODEL_NAME,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to load sentiment model '{SENTIMENT_MODEL_NAME}'."
+        ) from exc
 
 
 class SentimentService:
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session | None = None) -> None:
         self.db = db
 
+    def analyze_review_aspects(self, review_text: str) -> list[dict[str, str]]:
+        """Extract aspects and score sentiment for each aspect-specific context."""
+        results: list[dict[str, str]] = []
+
+        for aspect in extract_aspects(review_text):
+            context = find_aspect_context(review_text, aspect)
+            sentiment = self.analyze_text(context)
+            results.append(
+                {
+                    "aspect": aspect,
+                    "sentiment": str(sentiment["label"]),
+                }
+            )
+
+        return results
+
+    def analyze_text(self, review_text: str) -> dict[str, str | float]:
+        """Analyze a single review and return a normalized sentiment result."""
+        if not review_text or not review_text.strip():
+            return {"label": "Neutral", "score": 0.0}
+
+        try:
+            classifier = get_sentiment_pipeline()
+            result = classifier(review_text, truncation=True)
+        except Exception as exc:
+            raise RuntimeError("Sentiment analysis failed.") from exc
+
+        prediction = self._first_prediction(result)
+        raw_label = str(prediction.get("label", "neutral")).lower()
+        label = LABEL_MAP.get(raw_label, raw_label.title())
+        score = float(prediction.get("score", 0.0))
+
+        return {
+            "label": label,
+            "score": round(score, 4),
+        }
+
     def analyze_for_upload(self, upload_id: str) -> dict[str, Any]:
+        if self.db is None:
+            raise RuntimeError("Database session is required for upload analysis.")
 
         # Convert string UUID to UUID object
         try:
@@ -80,7 +154,17 @@ class SentimentService:
             if review is None:
                 continue
 
-            sentiment = analyze_sentiment(review.review_text or "")
+            context = find_aspect_context(
+                review.review_text or "",
+                detected_aspect.aspect or detected_aspect.aspect_name,
+            )
+            sentiment_result = self.analyze_text(context)
+            sentiment = str(sentiment_result["label"])
+            confidence_score = float(sentiment_result["score"])
+
+            detected_aspect.aspect = detected_aspect.aspect or detected_aspect.aspect_name
+            detected_aspect.sentiment = sentiment
+            detected_aspect.confidence = confidence_score
 
             if sentiment == "Positive":
                 positive += 1
@@ -91,8 +175,11 @@ class SentimentService:
 
             new_record = AspectSentiment(
                 detected_aspect_id=detected_aspect.id,
+                review_id=review.id,
+                aspect=detected_aspect.aspect,
                 sentiment=sentiment,
-                confidence_score=0.0,
+                confidence_score=confidence_score,
+                confidence=confidence_score,
             )
 
             self.db.add(new_record)
@@ -109,3 +196,85 @@ class SentimentService:
             "negative": negative,
             "neutral": neutral,
         }
+
+    def _first_prediction(self, result: Any) -> dict[str, Any]:
+        if isinstance(result, list) and result:
+            first_result = result[0]
+            if isinstance(first_result, dict):
+                return first_result
+
+        raise RuntimeError("Sentiment model returned an invalid response.")
+
+
+def find_aspect_context(review_text: str, aspect: str) -> str:
+    """Return the most relevant text span to score sentiment for an aspect."""
+    if not review_text or not review_text.strip():
+        return ""
+
+    sentence = find_sentence_containing_aspect(review_text, aspect)
+    return find_clause_containing_aspect(sentence, aspect)
+
+
+def find_sentence_containing_aspect(review_text: str, aspect: str) -> str:
+    """Find the sentence that mentions the aspect, falling back to full text."""
+    normalized_aspect = normalize_text(aspect)
+    if not normalized_aspect:
+        return review_text.strip()
+
+    doc = get_nlp_model()(review_text)
+    for sentence in doc.sents:
+        sentence_text = sentence.text.strip()
+        if contains_aspect(sentence_text, normalized_aspect):
+            return sentence_text
+
+    return review_text.strip()
+
+
+def find_clause_containing_aspect(sentence: str, aspect: str) -> str:
+    """Narrow mixed sentences to the clause that contains the target aspect."""
+    normalized_aspect = normalize_text(aspect)
+    clauses = split_into_clauses(sentence)
+
+    for clause in clauses:
+        if contains_aspect(clause, normalized_aspect):
+            return clause.strip()
+
+    return sentence.strip()
+
+
+def split_into_clauses(sentence: str) -> list[str]:
+    """Split on common contrast boundaries without losing reusable simplicity."""
+    doc = get_nlp_model()(sentence)
+    clauses: list[str] = []
+    current_tokens: list[str] = []
+
+    for token in doc:
+        if token.lower_ in CLAUSE_BOUNDARIES:
+            if current_tokens:
+                clauses.append(" ".join(current_tokens).strip())
+                current_tokens = []
+            continue
+
+        current_tokens.append(token.text)
+
+    if current_tokens:
+        clauses.append(" ".join(current_tokens).strip())
+
+    return [clause for clause in clauses if clause]
+
+
+def contains_aspect(text: str, normalized_aspect: str) -> bool:
+    """Check whether a normalized aspect phrase appears in a text span."""
+    normalized_text = normalize_text(text)
+    return f" {normalized_aspect} " in f" {normalized_text} "
+
+
+def normalize_text(text: str) -> str:
+    """Normalize text for simple aspect matching."""
+    doc = get_nlp_model()(text)
+    terms = [
+        token.lemma_.lower()
+        for token in doc
+        if token.is_alpha and not token.is_space
+    ]
+    return " ".join(terms)
