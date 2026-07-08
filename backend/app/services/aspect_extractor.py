@@ -7,6 +7,34 @@ import spacy
 from spacy.language import Language
 from spacy.tokens import Span, Token
 
+ASPECT_NORMALIZATION = {
+    # Camera
+    "picture": "camera",
+    "pictures": "camera",
+    "photo": "camera",
+    "photos": "camera",
+    "camera quality": "camera",
+
+    # Charging
+    "speed": "charging speed",
+    "charging": "charging speed",
+
+    # Value
+    "money": "value for money",
+    "value": "value for money",
+
+    # Audio
+    "speaker": "speakers",
+
+    # Display
+    "screen": "display",
+
+    # Battery
+    "battery life": "battery",
+
+    # Fingerprint
+    "fingerprint": "fingerprint sensor",
+}
 
 SPACY_MODEL_NAME = "en_core_web_sm"
 
@@ -51,14 +79,20 @@ def extract_aspects(text: str) -> list[str]:
         return []
 
     doc = get_nlp_model()(text)
-    aspects: dict[str, None] = {}
+
+    normalized_aspects = set()
 
     for chunk in doc.noun_chunks:
         aspect = _normalize_noun_chunk(chunk)
-        if _is_meaningful_aspect(aspect):
-            aspects.setdefault(aspect, None)
 
-    return list(aspects)
+        if not _is_meaningful_aspect(aspect):
+            continue
+
+        aspect = _normalize_aspect(aspect)
+
+        normalized_aspects.add(aspect)
+
+    return sorted(normalized_aspects)
 
 
 def _normalize_noun_chunk(chunk: Span) -> str:
@@ -86,6 +120,36 @@ def _normalize_token(token: Token) -> str:
     if lemma and lemma != "-pron-":
         return lemma
     return token.text.strip().lower()
+
+def _normalize_aspect(aspect: str) -> str:
+    """Normalize extracted aspects into canonical business aspects."""
+    aspect = aspect.lower().strip()
+
+    if "camera" in aspect:
+        return "camera"
+
+    if "battery" in aspect:
+        return "battery"
+
+    if "display" in aspect or "screen" in aspect:
+        return "display"
+
+    if "speaker" in aspect:
+        return "speakers"
+
+    if "charging" in aspect or "speed" in aspect:
+        return "charging speed"
+
+    if "fingerprint" in aspect:
+        return "fingerprint sensor"
+
+    if "price" in aspect:
+        return "price"
+
+    if "value" in aspect or "money" in aspect:
+        return "value for money"
+
+    return aspect
 
 
 def _is_meaningful_aspect(aspect: str) -> bool:

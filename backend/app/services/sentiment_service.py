@@ -14,7 +14,7 @@ from app.models.uploaded_file import UploadedFile
 from app.services.aspect_extractor import extract_aspects, get_nlp_model
 
 
-SENTIMENT_MODEL_NAME = "cardiffnlp/twitter-roberta-base-sentiment-latest"
+SENTIMENT_MODEL_NAME = "distilbert-base-uncased-finetuned-sst-2-english"
 LABEL_MAP = {
     "negative": "Negative",
     "neutral": "Neutral",
@@ -69,24 +69,25 @@ class SentimentService:
         return results
 
     def analyze_text(self, review_text: str) -> dict[str, str | float]:
-        """Analyze a single review and return a normalized sentiment result."""
         if not review_text or not review_text.strip():
             return {"label": "Neutral", "score": 0.0}
 
-        try:
-            classifier = get_sentiment_pipeline()
-            result = classifier(review_text, truncation=True)
-        except Exception as exc:
-            raise RuntimeError("Sentiment analysis failed.") from exc
+        classifier = get_sentiment_pipeline()
+
+        result = classifier(
+            review_text,
+            truncation=True,
+            max_length=512
+        )
 
         prediction = self._first_prediction(result)
-        raw_label = str(prediction.get("label", "neutral")).lower()
-        label = LABEL_MAP.get(raw_label, raw_label.title())
-        score = float(prediction.get("score", 0.0))
+
+        raw_label = prediction["label"].lower()
+        score = float(prediction["score"])
 
         return {
-            "label": label,
-            "score": round(score, 4),
+            "label": LABEL_MAP.get(raw_label, raw_label.title()),
+            "score": round(score, 4)
         }
 
     def analyze_for_upload(self, upload_id: str) -> dict[str, Any]:

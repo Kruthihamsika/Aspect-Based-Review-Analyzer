@@ -10,6 +10,8 @@ from app.models.detected_aspect import DetectedAspect
 from app.models.review import Review
 from app.models.uploaded_file import UploadedFile
 
+from app.services.sentiment_service import find_aspect_context
+
 
 class UploadService:
     def __init__(self, db: Session) -> None:
@@ -150,19 +152,18 @@ class UploadService:
 
     def _analyze_aspect_sentiment(
         self,
-        sentiment_service: Any,
-        review_text: str,
-        aspect: str,
-        row_number: int,
-    ) -> dict[str, str | float]:
-        try:
-            from app.services.sentiment_service import find_aspect_context
+        sentiment_service,
+        review_text,
+        aspect,
+        row_number,
+    ):
+        context = find_aspect_context(review_text, aspect)
 
-            context = find_aspect_context(review_text, aspect)
-            return sentiment_service.analyze_text(context)
-        except Exception as exc:  # pragma: no cover - keeps uploads resilient
-            print(
-                f"Sentiment prediction failed for review {row_number}, "
-                f"aspect '{aspect}': {exc}"
-            )
-            return {"label": "Neutral", "score": 0.0}
+        print(f"\nAspect: {aspect}")
+        print(f"Context: {context}")
+
+        result = sentiment_service.analyze_text(context)
+
+        print(f"Sentiment Result: {result}\n")
+
+        return result
